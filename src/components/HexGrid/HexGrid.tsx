@@ -204,6 +204,7 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove }: Prop
       setDragHex(null);
       setDragSvgPos(null);
       setDropTarget(null);
+      setPanning(false);
       if (pointerIdRef.current !== null) {
         try { svgRef.current?.releasePointerCapture(pointerIdRef.current); } catch { /* */ }
       }
