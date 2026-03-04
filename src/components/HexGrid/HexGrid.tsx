@@ -16,17 +16,20 @@ const HEX_SIZE = 30;
 const ZOOM_MIN = 0.3;
 const ZOOM_MAX = 1.5;
 const LONG_PRESS_MS = 400;
+// Initial view: 50% of grid bounds = 2× zoom, centered on the grid
+const INITIAL_ZOOM = 0.5;
+
+function getInitialViewBox(b: ReturnType<typeof getGridBounds>) {
+  const w = b.width * INITIAL_ZOOM;
+  const h = b.height * INITIAL_ZOOM;
+  return { x: b.minX + (b.width - w) / 2, y: b.minY + (b.height - h) / 2, w, h };
+}
 
 export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const bounds = getGridBounds(cols, rows, HEX_SIZE);
 
-  const [viewBox, setViewBox] = useState({
-    x: bounds.minX,
-    y: bounds.minY,
-    w: bounds.width,
-    h: bounds.height,
-  });
+  const [viewBox, setViewBox] = useState(() => getInitialViewBox(getGridBounds(cols, rows, HEX_SIZE)));
 
   const [panning, setPanning] = useState(false);
   const panStart = useRef({ x: 0, y: 0, vx: 0, vy: 0 });
@@ -41,9 +44,13 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove }: Prop
   const pointerIdRef = useRef<number | null>(null);
   const didDragMove = useRef(false);
 
+  // Multi-touch tracking for pinch-to-zoom
+  const activePointers = useRef<Map<number, { clientX: number; clientY: number }>>(new Map());
+  const lastPinchDist = useRef<number | null>(null);
+
   useEffect(() => {
     const b = getGridBounds(cols, rows, HEX_SIZE);
-    setViewBox({ x: b.minX, y: b.minY, w: b.width, h: b.height });
+    setViewBox(getInitialViewBox(b));
   }, [cols, rows]);
 
   const svgPoint = useCallback(
@@ -77,9 +84,23 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove }: Prop
 
   function handlePointerDown(e: PointerEvent) {
     if (e.button !== 0) return;
-    pointerIdRef.current = e.pointerId;
-    (e.target as Element).setPointerCapture(e.pointerId);
 
+    // Capture all pointer events on the SVG itself for reliable multi-touch
+    try { svgRef.current?.setPointerCapture(e.pointerId); } catch { /* */ }
+    activePointers.current.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+
+    // Two fingers down → enter pinch mode; cancel any pan or long-press
+    if (activePointers.current.size === 2) {
+      cancelLongPress();
+      setPanning(false);
+      const pts = Array.from(activePointers.current.values());
+      const dx = pts[0].clientX - pts[1].clientX;
+      const dy = pts[0].clientY - pts[1].clientY;
+      lastPinchDist.current = Math.sqrt(dx * dx + dy * dy);
+      return;
+    }
+
+    pointerIdRef.current = e.pointerId;
     didPan.current = false;
     panStart.current = { x: e.clientX, y: e.clientY, vx: viewBox.x, vy: viewBox.y };
 
@@ -105,6 +126,31 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove }: Prop
   }
 
   function handlePointerMove(e: PointerEvent) {
+    activePointers.current.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+
+    // Two-finger pinch-to-zoom
+    if (activePointers.current.size === 2) {
+      const pts = Array.from(activePointers.current.values());
+      const dx = pts[0].clientX - pts[1].clientX;
+      const dy = pts[0].clientY - pts[1].clientY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (lastPinchDist.current !== null && dist > 0) {
+        // Spreading fingers (dist ↑) → zoom in (smaller viewBox)
+        const factor = lastPinchDist.current / dist;
+        const newW = Math.max(bounds.width * ZOOM_MIN, Math.min(bounds.width * ZOOM_MAX, viewBox.w * factor));
+        const newH = Math.max(bounds.height * ZOOM_MIN, Math.min(bounds.height * ZOOM_MAX, viewBox.h * factor));
+        const midClientX = (pts[0].clientX + pts[1].clientX) / 2;
+        const midClientY = (pts[0].clientY + pts[1].clientY) / 2;
+        const mid = svgPoint(midClientX, midClientY);
+        const ratioX = (mid.x - viewBox.x) / viewBox.w;
+        const ratioY = (mid.y - viewBox.y) / viewBox.h;
+        setViewBox({ x: mid.x - ratioX * newW, y: mid.y - ratioY * newH, w: newW, h: newH });
+      }
+      lastPinchDist.current = dist;
+      return;
+    }
+
     if (dragHex) {
       const pt = svgPoint(e.clientX, e.clientY);
       setDragSvgPos(pt);
@@ -137,7 +183,15 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove }: Prop
     }));
   }
 
+  function endPointer(e: PointerEvent) {
+    activePointers.current.delete(e.pointerId);
+    if (activePointers.current.size < 2) {
+      lastPinchDist.current = null;
+    }
+  }
+
   function handlePointerUp(e: PointerEvent) {
+    endPointer(e);
     cancelLongPress();
 
     if (dragHex && onHexMove) {
@@ -151,11 +205,20 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove }: Prop
       setDragSvgPos(null);
       setDropTarget(null);
       if (pointerIdRef.current !== null) {
-        try { (e.target as Element).releasePointerCapture(pointerIdRef.current); } catch { /* */ }
+        try { svgRef.current?.releasePointerCapture(pointerIdRef.current); } catch { /* */ }
       }
       return;
     }
 
+    setPanning(false);
+  }
+
+  function handlePointerCancel(e: PointerEvent) {
+    endPointer(e);
+    cancelLongPress();
+    setDragHex(null);
+    setDragSvgPos(null);
+    setDropTarget(null);
     setPanning(false);
   }
 
@@ -228,8 +291,14 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove }: Prop
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerCancel}
       onWheel={handleWheel}
-      style={{ touchAction: 'none', cursor }}
+      style={{
+        touchAction: 'none',
+        cursor,
+        userSelect: 'none',
+        WebkitUserSelect: 'none',
+      }}
     >
       {visibleHexes.map((hex) => {
         const { x, y } = hexToPixel(hex.q, hex.r, HEX_SIZE);
