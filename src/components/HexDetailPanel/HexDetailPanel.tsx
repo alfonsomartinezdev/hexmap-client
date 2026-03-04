@@ -33,6 +33,7 @@ export function HexDetailPanel({
   const [name, setName] = useState(hex.name ?? '');
   const [description, setDescription] = useState(hex.description ?? '');
   const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
@@ -77,7 +78,11 @@ export function HexDetailPanel({
         description: description || '',
       });
       onHexUpdated(updated);
-      onClose();
+      setSaved(true);
+      setTimeout(() => {
+        setSaved(false);
+        onClose();
+      }, 700);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -188,8 +193,8 @@ export function HexDetailPanel({
             {error && <div className={styles.error}>{error}</div>}
 
             <div className={styles.formActions}>
-              <button className={styles.saveBtn} type="submit" disabled={saving}>
-                {saving ? 'Saving...' : 'Save Changes'}
+              <button className={styles.saveBtn} type="submit" disabled={saving || saved}>
+                {saving ? 'Saving…' : saved ? '✓ Saved' : 'Save Changes'}
               </button>
               <button
                 className={styles.clearBtn}

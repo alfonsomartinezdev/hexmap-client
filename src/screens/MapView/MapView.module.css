@@ -154,4 +154,36 @@
 .gridContainer {
   flex: 1;
   overflow: hidden;
+  position: relative;
+}
+
+.movingOverlay {
+  position: absolute;
+  bottom: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-size: 0.875rem;
+  font-weight: 600;
+  padding: 0.4rem 1rem;
+  border-radius: 999px;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.moveError {
+  position: absolute;
+  bottom: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--danger);
+  color: #fff;
+  font-size: 0.875rem;
+  font-weight: 600;
+  padding: 0.4rem 1rem;
+  border-radius: 999px;
+  cursor: pointer;
+  z-index: 10;
+  white-space: nowrap;
 }

@@ -13,7 +13,8 @@ interface Props {
 }
 
 const HEX_SIZE = 30;
-const ZOOM_MIN = 0.3;
+// Absolute minimum viewBox width: ~4 hex widths regardless of map size
+const ZOOM_IN_MIN_W = HEX_SIZE * 4;
 const ZOOM_MAX = 1.5;
 const LONG_PRESS_MS = 400;
 // Initial view: 50% of grid bounds = 2× zoom, centered on the grid
@@ -38,7 +39,13 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove }: Prop
   // Long-press hex drag state
   const [dragHex, setDragHex] = useState<Hex | null>(null);
   const [dragSvgPos, setDragSvgPos] = useState<{ x: number; y: number } | null>(null);
-  const [dropTarget, setDropTarget] = useState<{ q: number; r: number } | null>(null);
+  // dropTarget is kept in both state (for rendering) and a ref (for reliable reads in event handlers)
+  const [dropTarget, setDropTargetState] = useState<{ q: number; r: number } | null>(null);
+  const dropTargetRef = useRef<{ q: number; r: number } | null>(null);
+  function setDropTarget(val: { q: number; r: number } | null) {
+    dropTargetRef.current = val;
+    setDropTargetState(val);
+  }
   const longPressTimer = useRef<number>(0);
   const longPressHex = useRef<Hex | null>(null);
   const pointerIdRef = useRef<number | null>(null);
@@ -106,7 +113,7 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove }: Prop
 
     if (isGM && onHexMove) {
       const hex = findHexAtClient(e.clientX, e.clientY);
-      if (hex) {
+      if (hex && hex.active) {
         longPressHex.current = hex;
         longPressTimer.current = window.setTimeout(() => {
           if (longPressHex.current) {
@@ -138,8 +145,9 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove }: Prop
       if (lastPinchDist.current !== null && dist > 0) {
         // Spreading fingers (dist ↑) → zoom in (smaller viewBox)
         const factor = lastPinchDist.current / dist;
-        const newW = Math.max(bounds.width * ZOOM_MIN, Math.min(bounds.width * ZOOM_MAX, viewBox.w * factor));
-        const newH = Math.max(bounds.height * ZOOM_MIN, Math.min(bounds.height * ZOOM_MAX, viewBox.h * factor));
+        const clamped = Math.max(ZOOM_IN_MIN_W / viewBox.w, Math.min(bounds.width * ZOOM_MAX / viewBox.w, factor));
+        const newW = viewBox.w * clamped;
+        const newH = viewBox.h * clamped;
         const midClientX = (pts[0].clientX + pts[1].clientX) / 2;
         const midClientY = (pts[0].clientY + pts[1].clientY) / 2;
         const mid = svgPoint(midClientX, midClientY);
@@ -195,8 +203,9 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove }: Prop
     cancelLongPress();
 
     if (dragHex && onHexMove) {
-      if (dropTarget) {
-        const target = hexes.find((h) => h.q === dropTarget.q && h.r === dropTarget.r);
+      const currentDrop = dropTargetRef.current;
+      if (currentDrop) {
+        const target = hexes.find((h) => h.q === currentDrop.q && h.r === currentDrop.r);
         if (target && target.id !== dragHex.id) {
           onHexMove(dragHex.id, target.id);
         }
@@ -230,8 +239,9 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove }: Prop
     if (!svg) return;
 
     const factor = e.deltaY > 0 ? 1.1 : 0.9;
-    const newW = Math.max(bounds.width * ZOOM_MIN, Math.min(bounds.width * ZOOM_MAX, viewBox.w * factor));
-    const newH = Math.max(bounds.height * ZOOM_MIN, Math.min(bounds.height * ZOOM_MAX, viewBox.h * factor));
+    const clamped = Math.max(ZOOM_IN_MIN_W / viewBox.w, Math.min(bounds.width * ZOOM_MAX / viewBox.w, factor));
+    const newW = viewBox.w * clamped;
+    const newH = viewBox.h * clamped;
 
     const mouse = svgPoint(e.clientX, e.clientY);
     const ratioX = (mouse.x - viewBox.x) / viewBox.w;

@@ -20,6 +20,8 @@ export function MapView() {
   const [hexes, setHexes] = useState<Hex[]>([]);
   const [selectedHex, setSelectedHex] = useState<Hex | null>(null);
   const [loading, setLoading] = useState(true);
+  const [moving, setMoving] = useState(false);
+  const [moveError, setMoveError] = useState('');
   const [showSettings, setShowSettings] = useState(false);
   const [mapName, setMapName] = useState('');
   const [published, setPublished] = useState(false);
@@ -104,28 +106,28 @@ export function MapView() {
     const targetData = extractHexData(target);
     const emptyData = {
       active: false,
-      status: 'unrevealed',
+      status: 'unrevealed' as const,
       terrain_type_id: null,
       name: '',
       description: '',
     };
 
+    setMoving(true);
+    setMoveError('');
     try {
       if (isHexEmpty(target)) {
-        // Move: copy source to target, then clear source
         await api.updateHex(cId, mId, targetId, sourceData);
         await api.updateHex(cId, mId, sourceId, emptyData);
       } else {
-        // Swap: write source data to target, target data to source
-        // Clear target first to avoid any unique constraint issues, then write both
         await api.updateHex(cId, mId, targetId, sourceData);
         await api.updateHex(cId, mId, sourceId, targetData);
       }
-    } catch {
-      // swallow
+    } catch (err) {
+      setMoveError((err as Error).message || 'Move failed');
+    } finally {
+      setMoving(false);
     }
 
-    // Always refetch to get authoritative state from server
     await fetchData();
   }
 
@@ -217,6 +219,14 @@ export function MapView() {
           onHexClick={handleHexClick}
           onHexMove={isGM ? handleHexMove : undefined}
         />
+        {moving && (
+          <div className={styles.movingOverlay}>Moving…</div>
+        )}
+        {moveError && (
+          <div className={styles.moveError} onClick={() => setMoveError('')}>
+            {moveError} &times;
+          </div>
+        )}
       </div>
 
       {selectedHex && (
