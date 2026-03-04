@@ -1,5 +1,5 @@
 import { useState, useEffect, type FormEvent } from 'react';
-import type { Hex, TerrainType, User } from '../../types';
+import type { Hex, HexOverride, TerrainType, User } from '../../types';
 import { api } from '../../api/client';
 import { PlayerNotes } from '../PlayerNotes/PlayerNotes';
 import styles from './HexDetailPanel.module.css';
@@ -13,6 +13,8 @@ interface Props {
   currentUser: User | null;
   onClose: () => void;
   onHexUpdated: (hex: Hex) => void;
+  /** GM only: apply changes locally (no immediate API call) */
+  onApplyLocal?: (fields: HexOverride) => void;
 }
 
 export function HexDetailPanel({
@@ -24,6 +26,7 @@ export function HexDetailPanel({
   currentUser,
   onClose,
   onHexUpdated,
+  onApplyLocal,
 }: Props) {
   const [active, setActive] = useState(hex.active ?? false);
   const [status, setStatus] = useState(hex.status);
@@ -32,9 +35,6 @@ export function HexDetailPanel({
   );
   const [name, setName] = useState(hex.name ?? '');
   const [description, setDescription] = useState(hex.description ?? '');
-  const [saving, setSaving] = useState(false);
-  const [saved, setSaved] = useState(false);
-  const [error, setError] = useState('');
 
   useEffect(() => {
     setActive(hex.active ?? false);
@@ -44,50 +44,33 @@ export function HexDetailPanel({
     setDescription(hex.description ?? '');
   }, [hex]);
 
-  async function handleClear() {
+  function handleClear() {
     if (!confirm('Clear this hex? All data will be reset to defaults.')) return;
-    setError('');
-    setSaving(true);
-    try {
-      const updated = await api.updateHex(campaignId, mapId, hex.id, {
-        active: false,
-        status: 'unrevealed',
-        terrain_type_id: null,
-        name: '',
-        description: '',
-      });
-      onHexUpdated(updated);
-      onClose();
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setSaving(false);
-    }
+    onApplyLocal?.({
+      active: false,
+      status: 'unrevealed',
+      terrain_type_id: null,
+      terrain_type: null,
+      name: '',
+      description: '',
+    });
+    onClose();
   }
 
-  async function handleSave(e: FormEvent) {
+  function handleSave(e: FormEvent) {
     e.preventDefault();
-    setError('');
-    setSaving(true);
-    try {
-      const updated = await api.updateHex(campaignId, mapId, hex.id, {
-        active,
-        status,
-        terrain_type_id: terrainTypeId === '' ? null : Number(terrainTypeId),
-        name: name || '',
-        description: description || '',
-      });
-      onHexUpdated(updated);
-      setSaved(true);
-      setTimeout(() => {
-        setSaved(false);
-        onClose();
-      }, 700);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setSaving(false);
-    }
+    const selectedTerrain = terrainTypeId === ''
+      ? null
+      : terrainTypes.find(t => t.id === Number(terrainTypeId)) ?? null;
+    onApplyLocal?.({
+      active,
+      status,
+      terrain_type_id: terrainTypeId === '' ? null : Number(terrainTypeId),
+      terrain_type: selectedTerrain,
+      name: name || '',
+      description: description || '',
+    });
+    onClose();
   }
 
   function handleNoteChanged() {
@@ -190,17 +173,14 @@ export function HexDetailPanel({
               />
             </label>
 
-            {error && <div className={styles.error}>{error}</div>}
-
             <div className={styles.formActions}>
-              <button className={styles.saveBtn} type="submit" disabled={saving || saved}>
-                {saving ? 'Saving…' : saved ? '✓ Saved' : 'Save Changes'}
+              <button className={styles.saveBtn} type="submit">
+                Apply Changes
               </button>
               <button
                 className={styles.clearBtn}
                 type="button"
                 onClick={handleClear}
-                disabled={saving}
               >
                 Clear Hex
               </button>

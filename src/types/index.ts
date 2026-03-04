@@ -49,6 +49,16 @@ export interface Hex {
   player_notes?: PlayerNote[];
 }
 
+/** Fields that can be locally overridden before saving to the server */
+export interface HexOverride {
+  active: boolean;
+  status: Hex['status'];
+  terrain_type_id: number | null;
+  terrain_type: TerrainType | null;
+  name: string;
+  description: string;
+}
+
 export interface AuthResponse {
   token: string;
   user: User;

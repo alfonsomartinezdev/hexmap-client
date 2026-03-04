@@ -10,6 +10,10 @@ interface Props {
   isGM: boolean;
   onHexClick: (hex: Hex) => void;
   onHexMove?: (sourceId: number, targetId: number) => void;
+  /** When set, drag paints hexes instead of panning */
+  onHexPaint?: (hex: Hex) => void;
+  /** Hex IDs with unsaved local changes — shown with a small indicator dot */
+  pendingHexIds?: Set<number>;
 }
 
 const HEX_SIZE = 30;
@@ -26,7 +30,7 @@ function getInitialViewBox(b: ReturnType<typeof getGridBounds>) {
   return { x: b.minX + (b.width - w) / 2, y: b.minY + (b.height - h) / 2, w, h };
 }
 
-export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove }: Props) {
+export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexPaint, pendingHexIds }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const bounds = getGridBounds(cols, rows, HEX_SIZE);
 
@@ -54,6 +58,10 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove }: Prop
   // Multi-touch tracking for pinch-to-zoom
   const activePointers = useRef<Map<number, { clientX: number; clientY: number }>>(new Map());
   const lastPinchDist = useRef<number | null>(null);
+
+  // Paint mode gesture
+  const isPainting = useRef(false);
+  const lastPaintedHexId = useRef<number | null>(null);
 
   useEffect(() => {
     const b = getGridBounds(cols, rows, HEX_SIZE);
@@ -111,6 +119,18 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove }: Prop
     didPan.current = false;
     panStart.current = { x: e.clientX, y: e.clientY, vx: viewBox.x, vy: viewBox.y };
 
+    // Paint mode: single finger on a hex starts painting; empty space falls through to pan
+    if (onHexPaint && activePointers.current.size === 1) {
+      const hex = findHexAtClient(e.clientX, e.clientY);
+      if (hex) {
+        isPainting.current = true;
+        lastPaintedHexId.current = hex.id;
+        didDragMove.current = true; // suppress onClick after paint
+        onHexPaint(hex);
+        return; // no panning, no long-press
+      }
+    }
+
     if (isGM && onHexMove) {
       const hex = findHexAtClient(e.clientX, e.clientY);
       if (hex && hex.active) {
@@ -159,6 +179,18 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove }: Prop
       return;
     }
 
+    // Paint drag — paint each new hex the pointer enters
+    if (isPainting.current && onHexPaint) {
+      const pt = svgPoint(e.clientX, e.clientY);
+      const { q, r } = pixelToHex(pt.x, pt.y, HEX_SIZE);
+      const hex = hexes.find(h => h.q === q && h.r === r);
+      if (hex && hex.id !== lastPaintedHexId.current) {
+        onHexPaint(hex);
+        lastPaintedHexId.current = hex.id;
+      }
+      return;
+    }
+
     if (dragHex) {
       const pt = svgPoint(e.clientX, e.clientY);
       setDragSvgPos(pt);
@@ -202,6 +234,12 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove }: Prop
     endPointer(e);
     cancelLongPress();
 
+    if (isPainting.current) {
+      isPainting.current = false;
+      lastPaintedHexId.current = null;
+      return;
+    }
+
     if (dragHex && onHexMove) {
       const currentDrop = dropTargetRef.current;
       if (currentDrop) {
@@ -226,6 +264,8 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove }: Prop
   function handlePointerCancel(e: PointerEvent) {
     endPointer(e);
     cancelLongPress();
+    isPainting.current = false;
+    lastPaintedHexId.current = null;
     setDragHex(null);
     setDragSvgPos(null);
     setDropTarget(null);
@@ -291,8 +331,9 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove }: Prop
   const showLabels = viewBox.w < bounds.width * 0.6;
 
   let cursor = 'grab';
+  if (onHexPaint) cursor = 'crosshair';
+  if (panning) cursor = 'grabbing';
   if (dragHex) cursor = 'grabbing';
-  else if (panning) cursor = 'grabbing';
 
   return (
     <svg
@@ -360,6 +401,19 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove }: Prop
               >
                 {hex.name.length > 12 ? hex.name.slice(0, 11) + '...' : hex.name}
               </text>
+            )}
+
+            {/* Pending (unsaved) indicator dot */}
+            {pendingHexIds?.has(hex.id) && (
+              <circle
+                cx={x + HEX_SIZE * 0.55}
+                cy={y - HEX_SIZE * 0.55}
+                r={4}
+                fill="white"
+                stroke="var(--primary)"
+                strokeWidth={1.5}
+                style={{ pointerEvents: 'none' }}
+              />
             )}
           </g>
         );
