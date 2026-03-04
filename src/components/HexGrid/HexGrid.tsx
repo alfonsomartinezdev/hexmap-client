@@ -258,6 +258,12 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
       return;
     }
 
+    // Simple click: no pan, no drag, no paint — open the hex
+    if (!didPan.current && !didDragMove.current) {
+      const hex = findHexAtClient(e.clientX, e.clientY);
+      if (hex) onHexClick(hex);
+    }
+    didDragMove.current = false;
     setPanning(false);
   }
 
@@ -293,14 +299,6 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
       w: newW,
       h: newH,
     });
-  }
-
-  function handleHexClick(hex: Hex) {
-    if (didPan.current || dragHex || didDragMove.current) {
-      didDragMove.current = false;
-      return;
-    }
-    onHexClick(hex);
   }
 
   function hexFill(hex: Hex): string {
@@ -361,7 +359,6 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
         return (
           <g
             key={hex.id}
-            onClick={() => handleHexClick(hex)}
             style={{
               opacity: isDragSource ? 0.3 : hexOpacity(hex),
               cursor: dragHex ? 'grabbing' : 'pointer',
