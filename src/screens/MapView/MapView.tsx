@@ -34,6 +34,8 @@ export function MapView() {
   const [pendingChanges, setPendingChanges] = useState<Map<number, Partial<HexOverride>>>(new Map());
   const pendingRef = useRef<Map<number, Partial<HexOverride>>>(new Map());
   const [paintTerrain, setPaintTerrain] = useState<TerrainType | null>(null);
+  /** 'revealed' | 'unrevealed' for bulk reveal/hide brush; null = off */
+  const [paintStatus, setPaintStatus] = useState<'revealed' | 'unrevealed' | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [saveProgress, setSaveProgress] = useState<{ done: number; total: number } | null>(null);
@@ -106,6 +108,13 @@ export function MapView() {
         terrain_type_id: paintTerrain.id,
         terrain_type: paintTerrain,
         active: true,
+      });
+      return;
+    }
+    if (paintStatus && isGM) {
+      applyLocalHexUpdate(hex.id, {
+        status: paintStatus,
+        active: paintStatus === 'revealed',
       });
       return;
     }
@@ -243,10 +252,23 @@ export function MapView() {
             <>
               <button
                 className={`${styles.iconBtn} ${paintTerrain ? styles.iconBtnActive : ''}`}
-                onClick={() => setPaintTerrain(t => t ? null : (terrainTypes[0] ?? null))}
+                onClick={() => {
+                  setPaintStatus(null);
+                  setPaintTerrain(t => t ? null : (terrainTypes[0] ?? null));
+                }}
                 title={paintTerrain ? 'Exit paint mode' : 'Paint terrain'}
               >
                 🖌
+              </button>
+              <button
+                className={`${styles.iconBtn} ${paintStatus ? styles.iconBtnActive : ''}`}
+                onClick={() => {
+                  setPaintTerrain(null);
+                  setPaintStatus(s => s ? null : 'revealed');
+                }}
+                title={paintStatus ? 'Exit visibility brush' : 'Reveal or hide hexes (brush)'}
+              >
+                👁
               </button>
               <button
                 className={styles.iconBtn}
@@ -286,11 +308,20 @@ export function MapView() {
           isGM={isGM}
           onHexClick={handleHexClick}
           onHexMove={isGM ? handleHexMove : undefined}
-          onHexPaint={isGM && paintTerrain ? (hex) => applyLocalHexUpdate(hex.id, {
-            terrain_type_id: paintTerrain.id,
-            terrain_type: paintTerrain,
-            active: true,
-          }) : undefined}
+          onHexPaint={isGM && (paintTerrain || paintStatus) ? (hex) => {
+            if (paintTerrain) {
+              applyLocalHexUpdate(hex.id, {
+                terrain_type_id: paintTerrain.id,
+                terrain_type: paintTerrain,
+                active: true,
+              });
+            } else if (paintStatus) {
+              applyLocalHexUpdate(hex.id, {
+                status: paintStatus,
+                active: paintStatus === 'revealed',
+              });
+            }
+          } : undefined}
           pendingHexIds={pendingCount > 0 ? new Set(pendingChanges.keys()) : undefined}
         />
 
@@ -318,6 +349,35 @@ export function MapView() {
           </div>
         )}
 
+        {/* Reveal / Hide brush palette */}
+        {isGM && paintStatus && (
+          <div className={styles.paintPalette}>
+            <button
+              type="button"
+              className={`${styles.statusPaletteBtn} ${paintStatus === 'revealed' ? styles.statusPaletteBtnActive : ''}`}
+              onClick={() => setPaintStatus('revealed')}
+              title="Reveal hexes"
+            >
+              Reveal
+            </button>
+            <button
+              type="button"
+              className={`${styles.statusPaletteBtn} ${paintStatus === 'unrevealed' ? styles.statusPaletteBtnActive : ''}`}
+              onClick={() => setPaintStatus('unrevealed')}
+              title="Hide hexes"
+            >
+              Hide
+            </button>
+            <button
+              className={styles.paletteDismiss}
+              onClick={() => setPaintStatus(null)}
+              title="Exit visibility brush"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {saveError && (
           <div className={styles.saveErrorToast} onClick={() => setSaveError('')}>
             {saveError} &times;
@@ -325,7 +385,7 @@ export function MapView() {
         )}
       </div>
 
-      {selectedHex && !paintTerrain && (
+      {selectedHex && !paintTerrain && !paintStatus && (
         <HexDetailPanel
           hex={selectedHex}
           campaignId={cId}
