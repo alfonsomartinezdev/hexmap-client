@@ -1,6 +1,6 @@
-import { useRef, useState, useCallback, useEffect, type PointerEvent, type WheelEvent } from 'react';
+import { useRef, useState, useEffect, type PointerEvent } from 'react';
 import type { Hex } from '../../types';
-import { hexToPixel, hexCorners, getGridBounds, isHexInViewport, pixelToHex } from './hexUtils';
+import { hexToPixel, hexCorners, getGridBounds, isHexInViewport, pixelToHexContaining } from './hexUtils';
 import styles from './HexGrid.module.css';
 
 interface Props {
@@ -20,11 +20,15 @@ const HEX_SIZE = 30;
 // Absolute minimum viewBox width: ~4 hex widths regardless of map size
 const ZOOM_IN_MIN_W = HEX_SIZE * 4;
 const ZOOM_MAX = 1.5;
-const LONG_PRESS_MS = 400;
+const LONG_PRESS_MS = 280;
 // Initial view: 50% of grid bounds = 2× zoom, centered on the grid
 const INITIAL_ZOOM = 0.5;
+// Minimum client-pixel movement to treat a press as a pan (suppresses click)
+const PAN_THRESHOLD_PX = 8;
 
-function getInitialViewBox(b: ReturnType<typeof getGridBounds>) {
+type ViewBox = { x: number; y: number; w: number; h: number };
+
+function getInitialViewBox(b: ReturnType<typeof getGridBounds>): ViewBox {
   const w = b.width * INITIAL_ZOOM;
   const h = b.height * INITIAL_ZOOM;
   return { x: b.minX + (b.width - w) / 2, y: b.minY + (b.height - h) / 2, w, h };
@@ -34,16 +38,41 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
   const svgRef = useRef<SVGSVGElement>(null);
   const bounds = getGridBounds(cols, rows, HEX_SIZE);
 
-  const [viewBox, setViewBox] = useState(() => getInitialViewBox(getGridBounds(cols, rows, HEX_SIZE)));
+  // State mirrored in refs so handlers see current values before re-render (panning, viewBox, dragHex).
 
-  const [panning, setPanning] = useState(false);
+  const [viewBox, _setViewBox] = useState<ViewBox>(() => getInitialViewBox(getGridBounds(cols, rows, HEX_SIZE)));
+  const viewBoxRef = useRef<ViewBox>(viewBox);
+  function setViewBox(valOrFn: ViewBox | ((v: ViewBox) => ViewBox)) {
+    if (typeof valOrFn === 'function') {
+      const next = valOrFn(viewBoxRef.current);
+      viewBoxRef.current = next;
+      _setViewBox(next);
+    } else {
+      viewBoxRef.current = valOrFn;
+      _setViewBox(valOrFn);
+    }
+  }
+
+  const [panning, _setPanning] = useState(false);
+  const panningRef = useRef(false);
+  function setPanning(val: boolean) {
+    panningRef.current = val;
+    _setPanning(val);
+  }
+
+  const [dragHex, _setDragHex] = useState<Hex | null>(null);
+  const dragHexRef = useRef<Hex | null>(null);
+  function setDragHex(val: Hex | null) {
+    dragHexRef.current = val;
+    _setDragHex(val);
+  }
+
   const panStart = useRef({ x: 0, y: 0, vx: 0, vy: 0 });
   const didPan = useRef(false);
+  const clickDownAt = useRef<{ clientX: number; clientY: number } | null>(null);
 
-  // Long-press hex drag state
-  const [dragHex, setDragHex] = useState<Hex | null>(null);
+  // Long-press drag
   const [dragSvgPos, setDragSvgPos] = useState<{ x: number; y: number } | null>(null);
-  // dropTarget is kept in both state (for rendering) and a ref (for reliable reads in event handlers)
   const [dropTarget, setDropTargetState] = useState<{ q: number; r: number } | null>(null);
   const dropTargetRef = useRef<{ q: number; r: number } | null>(null);
   function setDropTarget(val: { q: number; r: number } | null) {
@@ -63,30 +92,31 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
   const isPainting = useRef(false);
   const lastPaintedHexId = useRef<number | null>(null);
 
+  const [hoveredHex, setHoveredHex] = useState<Hex | null>(null);
+
   useEffect(() => {
     const b = getGridBounds(cols, rows, HEX_SIZE);
     setViewBox(getInitialViewBox(b));
   }, [cols, rows]);
 
-  const svgPoint = useCallback(
-    (clientX: number, clientY: number) => {
-      const svg = svgRef.current;
-      if (!svg) return { x: 0, y: 0 };
-      const rect = svg.getBoundingClientRect();
-      const scaleX = viewBox.w / rect.width;
-      const scaleY = viewBox.h / rect.height;
-      return {
-        x: (clientX - rect.left) * scaleX + viewBox.x,
-        y: (clientY - rect.top) * scaleY + viewBox.y,
-      };
-    },
-    [viewBox]
-  );
+  /** Viewport (client) → SVG user space via getScreenCTM so letterboxing/transforms are correct. */
+  function svgPoint(clientX: number, clientY: number): { x: number; y: number } {
+    const svg = svgRef.current;
+    if (!svg) return { x: 0, y: 0 };
+    const pt = svg.createSVGPoint();
+    pt.x = clientX;
+    pt.y = clientY;
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return { x: 0, y: 0 };
+    const svgPt = pt.matrixTransform(ctm.inverse());
+    return { x: svgPt.x, y: svgPt.y };
+  }
 
+  /** Hex under (clientX, clientY); uses point-in-polygon for exact edges. */
   function findHexAtClient(clientX: number, clientY: number): Hex | undefined {
     const pt = svgPoint(clientX, clientY);
-    const { q, r } = pixelToHex(pt.x, pt.y, HEX_SIZE);
-    return hexes.find((h) => h.q === q && h.r === r);
+    const coords = pixelToHexContaining(pt.x, pt.y, HEX_SIZE, cols, rows);
+    return coords ? hexes.find((h) => h.q === coords.q && h.r === coords.r) : undefined;
   }
 
   function cancelLongPress() {
@@ -100,11 +130,14 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
   function handlePointerDown(e: PointerEvent) {
     if (e.button !== 0) return;
 
-    // Capture all pointer events on the SVG itself for reliable multi-touch
+    setHoveredHex(null);
+    clickDownAt.current = { clientX: e.clientX, clientY: e.clientY };
+
+    // Capture for reliable multi-touch
     try { svgRef.current?.setPointerCapture(e.pointerId); } catch { /* */ }
     activePointers.current.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
 
-    // Two fingers down → enter pinch mode; cancel any pan or long-press
+    // Two fingers: pinch-zoom
     if (activePointers.current.size === 2) {
       cancelLongPress();
       setPanning(false);
@@ -117,17 +150,17 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
 
     pointerIdRef.current = e.pointerId;
     didPan.current = false;
-    panStart.current = { x: e.clientX, y: e.clientY, vx: viewBox.x, vy: viewBox.y };
+    panStart.current = { x: e.clientX, y: e.clientY, vx: viewBoxRef.current.x, vy: viewBoxRef.current.y };
 
-    // Paint mode: single finger on a hex starts painting; empty space falls through to pan
+    // Paint: finger on hex starts paint; else pan
     if (onHexPaint && activePointers.current.size === 1) {
       const hex = findHexAtClient(e.clientX, e.clientY);
       if (hex) {
         isPainting.current = true;
         lastPaintedHexId.current = hex.id;
-        didDragMove.current = true; // suppress onClick after paint
+        didDragMove.current = true;
         onHexPaint(hex);
-        return; // no panning, no long-press
+        return;
       }
     }
 
@@ -137,8 +170,9 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
         longPressHex.current = hex;
         longPressTimer.current = window.setTimeout(() => {
           if (longPressHex.current) {
+            const h = longPressHex.current;
             const pt = svgPoint(e.clientX, e.clientY);
-            setDragHex(longPressHex.current);
+            setDragHex(h);
             setDragSvgPos(pt);
             didDragMove.current = true;
             longPressHex.current = null;
@@ -147,7 +181,7 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
       }
     }
 
-    if (!dragHex) {
+    if (!dragHexRef.current) {
       setPanning(true);
     }
   }
@@ -163,27 +197,27 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
       const dist = Math.sqrt(dx * dx + dy * dy);
 
       if (lastPinchDist.current !== null && dist > 0) {
-        // Spreading fingers (dist ↑) → zoom in (smaller viewBox)
+        const vb = viewBoxRef.current;
         const factor = lastPinchDist.current / dist;
-        const clamped = Math.max(ZOOM_IN_MIN_W / viewBox.w, Math.min(bounds.width * ZOOM_MAX / viewBox.w, factor));
-        const newW = viewBox.w * clamped;
-        const newH = viewBox.h * clamped;
+        const clamped = Math.max(ZOOM_IN_MIN_W / vb.w, Math.min(bounds.width * ZOOM_MAX / vb.w, factor));
+        const newW = vb.w * clamped;
+        const newH = vb.h * clamped;
         const midClientX = (pts[0].clientX + pts[1].clientX) / 2;
         const midClientY = (pts[0].clientY + pts[1].clientY) / 2;
         const mid = svgPoint(midClientX, midClientY);
-        const ratioX = (mid.x - viewBox.x) / viewBox.w;
-        const ratioY = (mid.y - viewBox.y) / viewBox.h;
+        const ratioX = (mid.x - vb.x) / vb.w;
+        const ratioY = (mid.y - vb.y) / vb.h;
         setViewBox({ x: mid.x - ratioX * newW, y: mid.y - ratioY * newH, w: newW, h: newH });
       }
       lastPinchDist.current = dist;
       return;
     }
 
-    // Paint drag — paint each new hex the pointer enters
+    // Paint drag
     if (isPainting.current && onHexPaint) {
       const pt = svgPoint(e.clientX, e.clientY);
-      const { q, r } = pixelToHex(pt.x, pt.y, HEX_SIZE);
-      const hex = hexes.find(h => h.q === q && h.r === r);
+      const coords = pixelToHexContaining(pt.x, pt.y, HEX_SIZE, cols, rows);
+      const hex = coords ? hexes.find(h => h.q === coords.q && h.r === coords.r) : undefined;
       if (hex && hex.id !== lastPaintedHexId.current) {
         onHexPaint(hex);
         lastPaintedHexId.current = hex.id;
@@ -191,36 +225,48 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
       return;
     }
 
-    if (dragHex) {
+    const currentDragHex = dragHexRef.current;
+    if (currentDragHex) {
       const pt = svgPoint(e.clientX, e.clientY);
       setDragSvgPos(pt);
-      const { q, r } = pixelToHex(pt.x, pt.y, HEX_SIZE);
-      if (q >= 0 && q < cols && r >= 0 && r < rows && !(q === dragHex.q && r === dragHex.r)) {
-        setDropTarget({ q, r });
+      const coords = pixelToHexContaining(pt.x, pt.y, HEX_SIZE, cols, rows);
+      if (coords && !(coords.q === currentDragHex.q && coords.r === currentDragHex.r)) {
+        setDropTarget(coords);
       } else {
         setDropTarget(null);
       }
       return;
     }
 
-    if (!panning) return;
+    // Idle: update hover
+    if (!panningRef.current) {
+      const hex = findHexAtClient(e.clientX, e.clientY);
+      setHoveredHex(hex ?? null);
+      return;
+    }
 
     const svg = svgRef.current;
     if (!svg) return;
     const rect = svg.getBoundingClientRect();
-    const dx = (e.clientX - panStart.current.x) * (viewBox.w / rect.width);
-    const dy = (e.clientY - panStart.current.y) * (viewBox.h / rect.height);
+    const vb = viewBoxRef.current;
 
-    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+    const clientDx = e.clientX - panStart.current.x;
+    const clientDy = e.clientY - panStart.current.y;
+
+    // Movement threshold so small drift doesn't suppress click
+    if (Math.abs(clientDx) > PAN_THRESHOLD_PX || Math.abs(clientDy) > PAN_THRESHOLD_PX) {
       didPan.current = true;
       cancelLongPress();
     }
 
-    setViewBox((v) => ({
-      ...v,
+    const dx = clientDx * (vb.w / rect.width);
+    const dy = clientDy * (vb.h / rect.height);
+
+    setViewBox({
+      ...vb,
       x: panStart.current.vx - dx,
       y: panStart.current.vy - dy,
-    }));
+    });
   }
 
   function endPointer(e: PointerEvent) {
@@ -240,12 +286,13 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
       return;
     }
 
-    if (dragHex && onHexMove) {
+    const currentDragHex = dragHexRef.current;
+    if (currentDragHex && onHexMove) {
       const currentDrop = dropTargetRef.current;
       if (currentDrop) {
         const target = hexes.find((h) => h.q === currentDrop.q && h.r === currentDrop.r);
-        if (target && target.id !== dragHex.id) {
-          onHexMove(dragHex.id, target.id);
+        if (target && target.id !== currentDragHex.id) {
+          onHexMove(currentDragHex.id, target.id);
         }
       }
       setDragHex(null);
@@ -258,11 +305,13 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
       return;
     }
 
-    // Simple click: no pan, no drag, no paint — open the hex
+    // Click: open hex at pointer-down position (matches hover)
     if (!didPan.current && !didDragMove.current) {
-      const hex = findHexAtClient(e.clientX, e.clientY);
+      const at = clickDownAt.current ?? { clientX: e.clientX, clientY: e.clientY };
+      const hex = findHexAtClient(at.clientX, at.clientY);
       if (hex) onHexClick(hex);
     }
+    clickDownAt.current = null;
     didDragMove.current = false;
     setPanning(false);
   }
@@ -276,30 +325,43 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
     setDragSvgPos(null);
     setDropTarget(null);
     setPanning(false);
+    setHoveredHex(null);
+    clickDownAt.current = null;
   }
 
-  function handleWheel(e: WheelEvent) {
-    e.preventDefault();
-    if (dragHex) return;
+  function handlePointerLeave() {
+    setHoveredHex(null);
+  }
+
+  useEffect(() => {
     const svg = svgRef.current;
     if (!svg) return;
 
-    const factor = e.deltaY > 0 ? 1.1 : 0.9;
-    const clamped = Math.max(ZOOM_IN_MIN_W / viewBox.w, Math.min(bounds.width * ZOOM_MAX / viewBox.w, factor));
-    const newW = viewBox.w * clamped;
-    const newH = viewBox.h * clamped;
+    function onWheel(e: WheelEvent) {
+      e.preventDefault();
+      if (dragHexRef.current) return;
 
-    const mouse = svgPoint(e.clientX, e.clientY);
-    const ratioX = (mouse.x - viewBox.x) / viewBox.w;
-    const ratioY = (mouse.y - viewBox.y) / viewBox.h;
+      const vb = viewBoxRef.current;
+      const factor = e.deltaY > 0 ? 1.1 : 0.9;
+      const clamped = Math.max(ZOOM_IN_MIN_W / vb.w, Math.min(bounds.width * ZOOM_MAX / vb.w, factor));
+      const newW = vb.w * clamped;
+      const newH = vb.h * clamped;
 
-    setViewBox({
-      x: mouse.x - ratioX * newW,
-      y: mouse.y - ratioY * newH,
-      w: newW,
-      h: newH,
-    });
-  }
+      const mouse = svgPoint(e.clientX, e.clientY);
+      const ratioX = (mouse.x - vb.x) / vb.w;
+      const ratioY = (mouse.y - vb.y) / vb.h;
+
+      setViewBox({
+        x: mouse.x - ratioX * newW,
+        y: mouse.y - ratioY * newH,
+        w: newW,
+        h: newH,
+      });
+    }
+
+    svg.addEventListener('wheel', onWheel, { passive: false });
+    return () => svg.removeEventListener('wheel', onWheel);
+  }, []);
 
   function hexFill(hex: Hex): string {
     if (!isGM && hex.status === 'unrevealed') return 'transparent';
@@ -342,7 +404,7 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerCancel}
-      onWheel={handleWheel}
+      onPointerLeave={handlePointerLeave}
       style={{
         touchAction: 'none',
         cursor,
@@ -355,6 +417,7 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
         const points = hexCorners(x, y, HEX_SIZE);
         const isDragSource = dragHex?.id === hex.id;
         const isDropTarget = dropTarget && hex.q === dropTarget.q && hex.r === dropTarget.r;
+        const isHovered = hoveredHex?.id === hex.id;
 
         return (
           <g
@@ -367,8 +430,8 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
             <polygon
               points={points}
               fill={hexFill(hex)}
-              stroke={isDropTarget ? 'var(--primary)' : hexStroke(hex)}
-              strokeWidth={isDropTarget ? 3 : 1.5}
+              stroke={isDropTarget ? 'var(--primary)' : isHovered ? 'var(--primary)' : hexStroke(hex)}
+              strokeWidth={isDropTarget ? 3 : isHovered ? 2.5 : 1.5}
               strokeDasharray={isDropTarget ? '6 3' : 'none'}
             />
 
@@ -400,7 +463,6 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
               </text>
             )}
 
-            {/* Pending (unsaved) indicator dot */}
             {pendingHexIds?.has(hex.id) && (
               <circle
                 cx={x + HEX_SIZE * 0.55}
