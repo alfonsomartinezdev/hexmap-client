@@ -1,4 +1,4 @@
-import { useState, useEffect, type FormEvent } from 'react';
+import { useState, useEffect, useRef, type FormEvent } from 'react';
 import type { Hex, HexOverride, TerrainType, User } from '../../types';
 import { api } from '../../api/client';
 import { PlayerNotes } from '../PlayerNotes/PlayerNotes';
@@ -35,6 +35,7 @@ export function HexDetailPanel({
   );
   const [name, setName] = useState(hex.name ?? '');
   const [description, setDescription] = useState(hex.description ?? '');
+  const mountedAtRef = useRef<number>(0);
 
   useEffect(() => {
     setActive(hex.active ?? false);
@@ -43,6 +44,16 @@ export function HexDetailPanel({
     setName(hex.name ?? '');
     setDescription(hex.description ?? '');
   }, [hex]);
+
+  useEffect(() => {
+    mountedAtRef.current = Date.now();
+  }, []);
+
+  function handleOverlayClick() {
+    // Ignore overlay clicks for 350ms after open to avoid mobile ghost click closing the panel
+    if (Date.now() - mountedAtRef.current < 350) return;
+    onClose();
+  }
 
   function handleClear() {
     if (!confirm('Clear this hex? All data will be reset to defaults.')) return;
@@ -85,7 +96,7 @@ export function HexDetailPanel({
   const showNotes = isGM || hex.status === 'revealed' || hex.status === 'explored';
 
   return (
-    <div className={styles.overlay} onClick={onClose}>
+    <div className={styles.overlay} onClick={handleOverlayClick}>
       <div className={styles.panel} onClick={(e) => e.stopPropagation()}>
         <div className={styles.handle} />
 

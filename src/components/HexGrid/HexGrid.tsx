@@ -25,8 +25,8 @@ const LONG_PRESS_MS = 220;
 const INITIAL_ZOOM = 0.7;
 // Minimum client-pixel movement to treat a press as a pan (suppresses click)
 const PAN_THRESHOLD_PX = 8;
-// Larger threshold for touch so tap jitter doesn't suppress hex click on mobile
-const PAN_THRESHOLD_TOUCH_PX = 16;
+// Larger threshold for touch so tap release movement doesn't suppress hex click (logs showed ~20px and ~37px vertical)
+const PAN_THRESHOLD_TOUCH_PX = 40;
 
 type ViewBox = { x: number; y: number; w: number; h: number };
 
