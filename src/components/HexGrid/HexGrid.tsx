@@ -19,12 +19,14 @@ interface Props {
 const HEX_SIZE = 30;
 // Absolute minimum viewBox width: ~4 hex widths regardless of map size
 const ZOOM_IN_MIN_W = HEX_SIZE * 4;
-const ZOOM_MAX = 1.5;
+const ZOOM_MAX = 1.0;
 const LONG_PRESS_MS = 220;
-// Initial view: 50% of grid bounds = 2× zoom, centered on the grid
-const INITIAL_ZOOM = 0.5;
+// Initial view: more zoomed in so less empty space
+const INITIAL_ZOOM = 0.7;
 // Minimum client-pixel movement to treat a press as a pan (suppresses click)
 const PAN_THRESHOLD_PX = 8;
+// Larger threshold for touch so tap jitter doesn't suppress hex click on mobile
+const PAN_THRESHOLD_TOUCH_PX = 16;
 
 type ViewBox = { x: number; y: number; w: number; h: number };
 
@@ -34,23 +36,42 @@ function getInitialViewBox(b: ReturnType<typeof getGridBounds>): ViewBox {
   return { x: b.minX + (b.width - w) / 2, y: b.minY + (b.height - h) / 2, w, h };
 }
 
+/** Expand logical viewBox so aspect matches container; removes letterboxing. */
+function getDisplayViewBox(logical: ViewBox, cw: number, ch: number): ViewBox {
+  if (cw <= 0 || ch <= 0) return logical;
+  const containerAspect = cw / ch;
+  const vbAspect = logical.w / logical.h;
+  if (containerAspect >= vbAspect) {
+    const newW = logical.h * containerAspect;
+    return { x: logical.x - (newW - logical.w) / 2, y: logical.y, w: newW, h: logical.h };
+  }
+  const newH = logical.w / containerAspect;
+  return { x: logical.x, y: logical.y - (newH - logical.h) / 2, w: logical.w, h: newH };
+}
+
+type Bounds = { minX: number; minY: number; width: number; height: number };
+
+/** Clamp viewBox (x, y) so the visible area stays within grid bounds; at 100% zoom there is no room to pan. */
+function clampViewBoxToBounds(vb: ViewBox, b: Bounds): ViewBox {
+  const x = Math.max(b.minX, Math.min(b.minX + b.width - vb.w, vb.x));
+  const y = Math.max(b.minY, Math.min(b.minY + b.height - vb.h, vb.y));
+  return { ...vb, x, y };
+}
+
 export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexPaint, pendingHexIds }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const bounds = getGridBounds(cols, rows, HEX_SIZE);
+  const [containerSize, setContainerSize] = useState<{ w: number; h: number } | null>(null);
 
   // State mirrored in refs so handlers see current values before re-render (panning, viewBox, dragHex).
 
   const [viewBox, _setViewBox] = useState<ViewBox>(() => getInitialViewBox(getGridBounds(cols, rows, HEX_SIZE)));
   const viewBoxRef = useRef<ViewBox>(viewBox);
   function setViewBox(valOrFn: ViewBox | ((v: ViewBox) => ViewBox)) {
-    if (typeof valOrFn === 'function') {
-      const next = valOrFn(viewBoxRef.current);
-      viewBoxRef.current = next;
-      _setViewBox(next);
-    } else {
-      viewBoxRef.current = valOrFn;
-      _setViewBox(valOrFn);
-    }
+    const next = typeof valOrFn === 'function' ? valOrFn(viewBoxRef.current) : valOrFn;
+    const clamped = clampViewBoxToBounds(next, bounds);
+    viewBoxRef.current = clamped;
+    _setViewBox(clamped);
   }
 
   const [panning, _setPanning] = useState(false);
@@ -103,6 +124,20 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
     const b = getGridBounds(cols, rows, HEX_SIZE);
     setViewBox(getInitialViewBox(b));
   }, [cols, rows]);
+
+  // Track container size so we can match viewBox aspect and remove letterboxing
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const updateSize = () => {
+      const r = svg.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) setContainerSize({ w: r.width, h: r.height });
+    };
+    updateSize();
+    const ro = new ResizeObserver(updateSize);
+    ro.observe(svg);
+    return () => ro.disconnect();
+  }, []);
 
   /** Viewport (client) → SVG user space via getScreenCTM so letterboxing/transforms are correct. */
   function svgPoint(clientX: number, clientY: number): { x: number; y: number } {
@@ -185,8 +220,6 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
         }, LONG_PRESS_MS);
       }
     }
-
-    /* Lazy pan: set panning only after movement > threshold in pointer move (so tap opens modal) */
   }
 
   function handlePointerMove(e: PointerEvent) {
@@ -256,8 +289,9 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
     const clientDy = e.clientY - panStart.current.y;
 
     // Lazy pan: only start panning once movement exceeds threshold (so tap opens modal)
+    const panThreshold = e.pointerType === 'touch' ? PAN_THRESHOLD_TOUCH_PX : PAN_THRESHOLD_PX;
     if (!panningRef.current) {
-      if (Math.abs(clientDx) <= PAN_THRESHOLD_PX && Math.abs(clientDy) <= PAN_THRESHOLD_PX) {
+      if (Math.abs(clientDx) <= panThreshold && Math.abs(clientDy) <= panThreshold) {
         const hex = findHexAtClient(e.clientX, e.clientY);
         setHoveredHex(hex ?? null);
         return;
@@ -271,9 +305,10 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
     if (!svg) return;
     const rect = svg.getBoundingClientRect();
     const vb = viewBoxRef.current;
+    const displayVb = getDisplayViewBox(vb, rect.width, rect.height);
 
-    const dx = clientDx * (vb.w / rect.width);
-    const dy = clientDy * (vb.h / rect.height);
+    const dx = clientDx * (displayVb.w / rect.width);
+    const dy = clientDy * (displayVb.h / rect.height);
 
     setViewBox({
       ...vb,
@@ -426,11 +461,13 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
   if (panning) cursor = 'grabbing';
   if (dragHex) cursor = 'grabbing';
 
+  const displayViewBox = containerSize ? getDisplayViewBox(viewBox, containerSize.w, containerSize.h) : viewBox;
+
   return (
     <svg
       ref={svgRef}
       className={styles.svg}
-      viewBox={`${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}`}
+      viewBox={`${displayViewBox.x} ${displayViewBox.y} ${displayViewBox.w} ${displayViewBox.h}`}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
