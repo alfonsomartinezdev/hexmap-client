@@ -20,7 +20,7 @@ const HEX_SIZE = 30;
 // Absolute minimum viewBox width: ~4 hex widths regardless of map size
 const ZOOM_IN_MIN_W = HEX_SIZE * 4;
 const ZOOM_MAX = 1.5;
-const LONG_PRESS_MS = 280;
+const LONG_PRESS_MS = 220;
 // Initial view: 50% of grid bounds = 2× zoom, centered on the grid
 const INITIAL_ZOOM = 0.5;
 // Minimum client-pixel movement to treat a press as a pan (suppresses click)
@@ -87,6 +87,7 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
   // Multi-touch tracking for pinch-to-zoom
   const activePointers = useRef<Map<number, { clientX: number; clientY: number }>>(new Map());
   const lastPinchDist = useRef<number | null>(null);
+  const didPinchThisGesture = useRef(false);
 
   // Paint mode gesture
   const isPainting = useRef(false);
@@ -94,7 +95,11 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
 
   const [hoveredHex, setHoveredHex] = useState<Hex | null>(null);
 
+  // Only reset viewBox when grid dimensions actually change (e.g. different map), not on refetch
+  const lastGridDims = useRef({ cols, rows });
   useEffect(() => {
+    if (lastGridDims.current.cols === cols && lastGridDims.current.rows === rows) return;
+    lastGridDims.current = { cols, rows };
     const b = getGridBounds(cols, rows, HEX_SIZE);
     setViewBox(getInitialViewBox(b));
   }, [cols, rows]);
@@ -181,13 +186,14 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
       }
     }
 
-    if (!dragHexRef.current) {
-      setPanning(true);
-    }
+    /* Lazy pan: set panning only after movement > threshold in pointer move (so tap opens modal) */
   }
 
   function handlePointerMove(e: PointerEvent) {
-    activePointers.current.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+    // Only update pointers that were added in pointerdown (don't add on move or we'd treat hover as pan)
+    if (activePointers.current.has(e.pointerId)) {
+      activePointers.current.set(e.pointerId, { clientX: e.clientX, clientY: e.clientY });
+    }
 
     // Two-finger pinch-to-zoom
     if (activePointers.current.size === 2) {
@@ -197,6 +203,7 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
       const dist = Math.sqrt(dx * dx + dy * dy);
 
       if (lastPinchDist.current !== null && dist > 0) {
+        didPinchThisGesture.current = true;
         const vb = viewBoxRef.current;
         const factor = lastPinchDist.current / dist;
         const clamped = Math.max(ZOOM_IN_MIN_W / vb.w, Math.min(bounds.width * ZOOM_MAX / vb.w, factor));
@@ -238,26 +245,32 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
       return;
     }
 
-    // Idle: update hover
-    if (!panningRef.current) {
+    // No pointer down (e.g. mouse moved into SVG without clicking): only update hover
+    if (activePointers.current.size !== 1) {
       const hex = findHexAtClient(e.clientX, e.clientY);
       setHoveredHex(hex ?? null);
       return;
+    }
+
+    const clientDx = e.clientX - panStart.current.x;
+    const clientDy = e.clientY - panStart.current.y;
+
+    // Lazy pan: only start panning once movement exceeds threshold (so tap opens modal)
+    if (!panningRef.current) {
+      if (Math.abs(clientDx) <= PAN_THRESHOLD_PX && Math.abs(clientDy) <= PAN_THRESHOLD_PX) {
+        const hex = findHexAtClient(e.clientX, e.clientY);
+        setHoveredHex(hex ?? null);
+        return;
+      }
+      setPanning(true);
+      didPan.current = true;
+      cancelLongPress();
     }
 
     const svg = svgRef.current;
     if (!svg) return;
     const rect = svg.getBoundingClientRect();
     const vb = viewBoxRef.current;
-
-    const clientDx = e.clientX - panStart.current.x;
-    const clientDy = e.clientY - panStart.current.y;
-
-    // Movement threshold so small drift doesn't suppress click
-    if (Math.abs(clientDx) > PAN_THRESHOLD_PX || Math.abs(clientDy) > PAN_THRESHOLD_PX) {
-      didPan.current = true;
-      cancelLongPress();
-    }
 
     const dx = clientDx * (vb.w / rect.width);
     const dy = clientDy * (vb.h / rect.height);
@@ -305,8 +318,10 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
       return;
     }
 
-    // Click: open hex at pointer-down position (matches hover)
-    if (!didPan.current && !didDragMove.current) {
+    // Click: open hex at pointer-down position (matches hover); suppress if this gesture was a pinch
+    if (didPinchThisGesture.current) {
+      if (activePointers.current.size === 0) didPinchThisGesture.current = false;
+    } else if (!didPan.current && !didDragMove.current) {
       const at = clickDownAt.current ?? { clientX: e.clientX, clientY: e.clientY };
       const hex = findHexAtClient(at.clientX, at.clientY);
       if (hex) onHexClick(hex);
@@ -331,6 +346,22 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
 
   function handlePointerLeave() {
     setHoveredHex(null);
+    /* Safety: if pointer left without firing pointerup (e.g. left window), clear pan/drag so we don't stay stuck */
+    if (panningRef.current || dragHexRef.current || activePointers.current.size > 0) {
+      cancelLongPress();
+      setDragHex(null);
+      setDragSvgPos(null);
+      setDropTarget(null);
+      setPanning(false);
+      clickDownAt.current = null;
+      didDragMove.current = false;
+      activePointers.current.clear();
+      lastPinchDist.current = null;
+      if (pointerIdRef.current !== null) {
+        try { svgRef.current?.releasePointerCapture(pointerIdRef.current); } catch { /* */ }
+        pointerIdRef.current = null;
+      }
+    }
   }
 
   useEffect(() => {

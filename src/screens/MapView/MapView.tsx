@@ -185,8 +185,8 @@ export function MapView() {
         });
         setSaveProgress({ done: i + 1, total: entries.length });
       }
-      updatePending(new Map());
       await fetchData();
+      updatePending(new Map());
     } catch (err) {
       setSaveError((err as Error).message || 'Save failed');
     } finally {
@@ -279,6 +279,7 @@ export function MapView() {
 
       <div className={styles.gridContainer}>
         <HexGrid
+          key={`${cId}-${mId}`}
           hexes={displayHexes}
           cols={map.grid_cols}
           rows={map.grid_rows}

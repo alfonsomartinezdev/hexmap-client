@@ -178,6 +178,7 @@
   overflow: hidden;
   position: relative;
   touch-action: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 /* Terrain paint palette — floats at the bottom of the grid */
