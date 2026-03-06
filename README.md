@@ -1,3 +1,9 @@
+# Hexmap client
+
+**Mobile-first** React app: prioritize touch, small viewports, and real estate on phones. Test zoom, pan, and tap on mobile; avoid desktop-only behavior for core map interactions.
+
+---
+
 # React + TypeScript + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.

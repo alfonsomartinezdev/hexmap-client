@@ -17,7 +17,7 @@ interface Props {
 }
 
 const HEX_SIZE = 30;
-// Absolute minimum viewBox width: ~4 hex widths regardless of map size
+// Zoom/pan limits apply to all viewports (mobile-first); no desktop-only branching
 const ZOOM_IN_MIN_W = HEX_SIZE * 4;
 const ZOOM_MAX = 1.0;
 const LONG_PRESS_MS = 220;
@@ -56,6 +56,21 @@ function clampViewBoxToBounds(vb: ViewBox, b: Bounds): ViewBox {
   const x = Math.max(b.minX, Math.min(b.minX + b.width - vb.w, vb.x));
   const y = Math.max(b.minY, Math.min(b.minY + b.height - vb.h, vb.y));
   return { ...vb, x, y };
+}
+
+/** Display viewBox for SVG: match container aspect but cap to grid bounds so we never show empty space (mobile-first). */
+function getCappedDisplayViewBox(
+  logical: ViewBox,
+  cw: number,
+  ch: number,
+  b: Bounds
+): ViewBox {
+  const raw = getDisplayViewBox(logical, cw, ch);
+  const w = Math.min(raw.w, b.width);
+  const h = Math.min(raw.h, b.height);
+  const cx = logical.x + logical.w / 2;
+  const cy = logical.y + logical.h / 2;
+  return clampViewBoxToBounds({ x: cx - w / 2, y: cy - h / 2, w, h }, b);
 }
 
 export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexPaint, pendingHexIds }: Props) {
@@ -305,7 +320,7 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
     if (!svg) return;
     const rect = svg.getBoundingClientRect();
     const vb = viewBoxRef.current;
-    const displayVb = getDisplayViewBox(vb, rect.width, rect.height);
+    const displayVb = getCappedDisplayViewBox(vb, rect.width, rect.height, bounds);
 
     const dx = clientDx * (displayVb.w / rect.width);
     const dy = clientDy * (displayVb.h / rect.height);
@@ -461,7 +476,8 @@ export function HexGrid({ hexes, cols, rows, isGM, onHexClick, onHexMove, onHexP
   if (panning) cursor = 'grabbing';
   if (dragHex) cursor = 'grabbing';
 
-  const displayViewBox = containerSize ? getDisplayViewBox(viewBox, containerSize.w, containerSize.h) : viewBox;
+  const displayViewBox =
+    containerSize ? getCappedDisplayViewBox(viewBox, containerSize.w, containerSize.h, bounds) : viewBox;
 
   return (
     <svg

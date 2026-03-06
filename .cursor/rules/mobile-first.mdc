@@ -1,0 +1,12 @@
+---
+description: This app is mobile-first; always consider touch, viewport, and small screens
+alwaysApply: true
+---
+
+# Mobile-first application
+
+This project is **mobile-first**. When changing UI, gestures, or layout:
+
+- **Test on mobile viewports** (narrow/tall) as well as desktop. Zoom, pan, and tap behavior must work on touch devices.
+- **Avoid desktop-only logic** for core interactions (e.g. hex grid zoom/pan/clamp apply to all viewports unless explicitly documented).
+- **Real estate matters** on small screens: minimize empty space, avoid large padding or letterboxing when possible, and ensure tap targets are usable.
